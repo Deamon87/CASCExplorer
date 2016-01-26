@@ -1,8 +1,10 @@
 ﻿using CASCConsole.Properties;
 using CASCExplorer;
+using SimpleWebServer;
 using System;
-using System.ComponentModel;
 using System.IO;
+using System.Net;
+using System.ComponentModel;
 using System.Text.RegularExpressions;
 
 namespace CASCConsole
@@ -10,15 +12,18 @@ namespace CASCConsole
     class Program
     {
         static object progressLock = new object();
+        static CASCHandler _cascHandler = null;
 
         static void Main(string[] args)
         {
-            if (args.Length != 4)
+
+            if (args.Length != 4 && args.Length != 5)
             {
                 Console.WriteLine("Invalid arguments count!");
-                Console.WriteLine("Usage: CASCConsole <pattern> <destination> <localeFlags> <contentFlags>");
+                Console.WriteLine("Usage: CASCConsole <pattern> <destination> <localeFlags> <contentFlags> [<startWebServer>]");
                 return;
             }
+             
 
             Console.WriteLine("Settings:");
             Console.WriteLine("    WowPath: {0}", Settings.Default.StoragePath);
@@ -34,12 +39,18 @@ namespace CASCConsole
                 : CASCConfig.LoadLocalStorageConfig(Settings.Default.StoragePath);
 
             CASCHandler cascHandler = CASCHandler.OpenStorage(config, bgLoader);
+            _cascHandler = cascHandler;
+
+            int startWebServer = 0;
 
             string pattern = args[0];
             string dest = args[1];
             LocaleFlags locale = (LocaleFlags)Enum.Parse(typeof(LocaleFlags), args[2]);
             ContentFlags content = (ContentFlags)Enum.Parse(typeof(ContentFlags), args[3]);
-
+            if (args.Length == 5) {
+                startWebServer = Int32.Parse(args[4]);
+            }
+            
             cascHandler.Root.LoadListFile(Path.Combine(Environment.CurrentDirectory, "listfile.txt"), bgLoader);
             CASCFolder root = cascHandler.Root.SetFlags(locale, content);
 
@@ -50,29 +61,58 @@ namespace CASCConsole
             Console.WriteLine("    Destination: {0}", dest);
             Console.WriteLine("    LocaleFlags: {0}", locale);
             Console.WriteLine("    ContentFlags: {0}", content);
+            Console.WriteLine("    startWebServer: {0}", startWebServer);
 
-            Wildcard wildcard = new Wildcard(pattern, true, RegexOptions.IgnoreCase);
-
-            foreach (var file in root.GetFiles())
+            if (startWebServer == 1)
             {
-                if (wildcard.IsMatch(file.FullName))
-                {
-                    Console.Write("Extracting '{0}'...", file.FullName);
+                WebServer ws = new WebServer(SendResponse, "http://localhost:8084/get/");
+                ws.Run();
+                Console.WriteLine("A simple webserver. Press a key to quit.");
+                Console.ReadKey();
+                ws.Stop();
+            }
+            else
+            {
+                Wildcard wildcard = new Wildcard(pattern, true, RegexOptions.IgnoreCase);
 
-                    try
+                foreach (var file in root.GetFiles())
+                {
+                    if (wildcard.IsMatch(file.FullName))
                     {
-                        cascHandler.SaveFileTo(file.FullName, dest);
-                        Console.WriteLine(" Ok!");
-                    }
-                    catch (Exception exc)
-                    {
-                        Console.WriteLine(" Error!");
-                        Logger.WriteLine(exc.Message);
+                        Console.Write("Extracting '{0}'...", file.FullName);
+
+                        try
+                        {
+                            cascHandler.SaveFileTo(file.FullName, dest);
+                            Console.WriteLine(" Ok!");
+                        }
+                        catch (Exception exc)
+                        {
+                            Console.WriteLine(" Error!");
+                            Logger.WriteLine(exc.Message);
+                        }
                     }
                 }
-            }
 
-            Console.WriteLine("Extracted.");
+                Console.WriteLine("Extracted.");
+            }
+        }
+
+        public static string SendResponse(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            String fileName = request.Url.LocalPath.Substring(5, request.Url.LocalPath.Length - 5);
+            try {
+                Stream stream = _cascHandler.OpenFile(fileName);
+
+                response.ContentLength64 = stream.Length;
+                response.ContentType = "application/octet-stream";
+                response.Headers.Add("Access-Control-Allow-Origin", "*");
+                response.Headers.Add("Content-Disposition", "attachment; filename=" + fileName.Replace(" ", "_"));
+                stream.CopyTo(response.OutputStream);
+            } catch(Exception e){
+
+            }
+            return string.Format("<HTML><BODY>My web page.<br>{0}; "+fileName+"</BODY></HTML>", DateTime.Now);
         }
 
         private static void BgLoader_ProgressChanged(object sender, ProgressChangedEventArgs e)
